@@ -1335,12 +1335,17 @@ namespace Sdl.Community.Qualitivity.Tracking
 
 				#endregion
 
+				bool hasWindowInfo = false;
+				if (trackedDocuments.ActiveSegment?.CurrentKeyStrokes != null)
+					hasWindowInfo = trackedDocuments.ActiveSegment.CurrentKeyStrokes.Any(x => x.EditorWindowRectangle != null);
+
 				if (Convert.ToBoolean(Tracked.Settings.GetTrackingProperty(@"recordNonUpdatedSegments").Value)
 					|| Tracked.DocumentSegmentPairs[trackedDocuments.ActiveSegment.CurrentSegmentUniqueId].ConfirmationLevel
 							!= trackedDocuments.ActiveSegment.CurrentISegmentPairProperties.ConfirmationLevel.ToString()
 					|| trackedDocuments.ActiveSegment.CurrentSegmentContentHasChanged
 					|| targetCommentsChanged
-					|| qualityMetricChanged)
+					|| qualityMetricChanged
+					|| hasWindowInfo)
 				{
 					var record = new Record
 					{

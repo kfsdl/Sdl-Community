@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Drawing;
 using System.Xml.Serialization;
 
 namespace Sdl.Community.Structures.Documents.Records
@@ -75,6 +76,12 @@ namespace Sdl.Community.Structures.Documents.Records
 
 		public int Y { get; set; }
 
+		public Rectangle? MainWindowRectangle { get; set; }
+
+		public Rectangle? DocumentWindowRectangle { get; set; }
+
+		public Rectangle? EditorWindowRectangle { get; set; }
+
         public object Clone()
         {
             var keyStroke = new KeyStroke
@@ -94,7 +101,10 @@ namespace Sdl.Community.Structures.Documents.Records
                 Shift = Shift,
 				Position = Position,
 				X = X,
-				Y = Y
+				Y = Y,
+				MainWindowRectangle = MainWindowRectangle,
+				DocumentWindowRectangle = DocumentWindowRectangle,
+				EditorWindowRectangle = EditorWindowRectangle
             };
 
             return keyStroke;

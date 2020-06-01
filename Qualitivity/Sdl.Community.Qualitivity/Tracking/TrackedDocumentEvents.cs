@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 using Sdl.Community.Comparison;
@@ -13,8 +16,46 @@ using Sdl.TranslationStudioAutomation.IntegrationApi;
 
 namespace Sdl.Community.Qualitivity.Tracking
 {
+
+	#region "Structures for reporting caret position"
+	[StructLayout(LayoutKind.Sequential)]    
+	public struct RECT
+	{
+		public uint Left;
+		public uint Top;
+		public uint Right;
+		public uint Bottom;
+	};
+
+	[StructLayout(LayoutKind.Sequential)]    
+	public struct GUITHREADINFO
+	{
+		public uint cbSize;
+		public uint flags;
+		public IntPtr hwndActive;
+		public IntPtr hwndFocus;
+		public IntPtr hwndCapture;
+		public IntPtr hwndMenuOwner;
+		public IntPtr hwndMoveSize;
+		public IntPtr hwndCaret;
+		public RECT rcCaret;
+	};
+	#endregion
+
+
+
 	public class TrackedDocumentEvents
 	{
+
+		#region "Imports for reporting caret position"
+		[DllImport("user32.dll", EntryPoint = "GetGUIThreadInfo")]
+		public static extern bool GetGUIThreadInfo(uint tId, out GUITHREADINFO threadInfo);
+
+		[DllImport("user32.dll", SetLastError = true)]
+		[return: MarshalAs(UnmanagedType.Bool)]
+		static extern bool GetWindowRect(IntPtr hWnd, ref RECT lpRect);
+		#endregion
+
 		public static long GetTargetCursorPosition()
 		{
 			if (Tracked.StudioWindow.InvokeRequired)
@@ -107,6 +148,159 @@ namespace Sdl.Community.Qualitivity.Tracking
 			trackedDocuments.ActiveSegment.CurrentISegmentPairProperties = Tracked.ActiveDocument.ActiveSegmentPair.Target.Properties.Clone() as ISegmentPairProperties;
 		}
 
+		static MethodInfo _MoveResizeHandlerMethodInfo = typeof(TrackedDocumentEvents).GetMethod(nameof(ControlMovedOrResized), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+		class ControlInfo
+		{
+			public IntPtr? Handle = null;
+			public object Control = null;
+			public Delegate ResizeDelegate = null;
+			public Delegate MoveDelegate = null;
+
+			public void Unbind()
+			{
+				try
+				{
+					if (Control == null)
+						return;
+					Debug.WriteLine("attempting unbind");
+					var ev = Control.GetType().GetEvent("SizeChanged");
+					ev.GetRemoveMethod().Invoke(Control, new object[] { ResizeDelegate });
+					ev = Control.GetType().GetEvent("Move");
+					ev.GetRemoveMethod().Invoke(Control, new object[] {MoveDelegate });
+				}
+				catch (Exception _)
+				{
+					Debug.Assert(false);
+				}
+				Handle = null;
+				Control = null;
+				ResizeDelegate = null;
+				MoveDelegate = null;
+
+
+			}
+
+			public void Bind(object ctrl, IntPtr handle)
+			{
+				try
+				{
+					Debug.WriteLine("attempting bind");
+					var ev = ctrl.GetType().GetEvent("SizeChanged");
+					Handle = handle;
+					Control = ctrl;
+					ResizeDelegate = Delegate.CreateDelegate(ev.EventHandlerType, _MoveResizeHandlerMethodInfo);
+					ev.GetAddMethod().Invoke(ctrl, new object[] { ResizeDelegate });
+					ev = ctrl.GetType().GetEvent("Move");
+					MoveDelegate = Delegate.CreateDelegate(ev.EventHandlerType, _MoveResizeHandlerMethodInfo);
+					ev.GetAddMethod().Invoke(ctrl, new object[] { MoveDelegate });
+				}
+				catch (Exception _)
+				{
+					Debug.Assert(false);
+				}
+
+			}
+		}
+
+		static ControlInfo _activeEditControlInfo = new ControlInfo(); // InternalDocument.ActiveView.DocumentView.ActiveEditControl
+		static ControlInfo _activeControlInfo = new ControlInfo(); // InternalDocument.ActiveView.DocumentView.SideBySideEditor.ActiveControl
+		static ControlInfo _mainWindowControlInfo = new ControlInfo();
+
+		static bool RebindCtrlIfChanged(object ctrl, ref ControlInfo controlInfo)
+		{
+			if (ctrl == null)
+			{
+				Debug.WriteLine("null ctrl in RebindCtrlIfChanged");
+				return false;
+			}
+			
+			var handle = (IntPtr)GetProperty(ctrl, "Handle");
+
+			if (controlInfo.Handle != null && handle != controlInfo.Handle.Value)
+			{
+				controlInfo.Unbind();
+				//try
+				//{
+				//	Debug.WriteLine("attempting unbind");
+				//	var ev = controlInfo.Control.GetType().GetEvent("SizeChanged");
+				//	ev.GetRemoveMethod().Invoke(controlInfo.Control, new object[] { controlInfo.ResizeDelegate });
+				//	ev = controlInfo.Control.GetType().GetEvent("Move");
+				//	ev.GetRemoveMethod().Invoke(controlInfo.Control, new object[] { controlInfo.MoveDelegate });
+				//	controlInfo = new ControlInfo();
+				//}
+				//catch (Exception _)
+				//{
+				//	Debug.Assert(false);
+				//}
+			}
+
+			if (handle == null)
+			{
+				Debug.WriteLine("null handle - quitting");
+				return false;
+			}
+
+			if (controlInfo.Handle == null)
+			{
+				controlInfo.Bind(ctrl, handle);
+				//try
+				//{
+				//	Debug.WriteLine("attempting bind");
+				//	var ev = ctrl.GetType().GetEvent("SizeChanged");
+				//	controlInfo.Handle = handle;
+				//	controlInfo.Control = ctrl;
+				//	controlInfo.ResizeDelegate = Delegate.CreateDelegate(ev.EventHandlerType, _MoveResizeHandlerMethodInfo);
+				//	ev.GetAddMethod().Invoke(ctrl, new object[] { controlInfo.ResizeDelegate });
+				//	ev = ctrl.GetType().GetEvent("Move");
+				//	controlInfo.MoveDelegate = Delegate.CreateDelegate(ev.EventHandlerType, _MoveResizeHandlerMethodInfo);
+				//	ev.GetAddMethod().Invoke(ctrl, new object[] { controlInfo.MoveDelegate });
+				//}
+				//catch (Exception _)
+				//{
+				//	Debug.Assert(false);
+				//}
+				return true;
+			}
+			return false;
+
+		}
+
+		static void EnsureMainWindowBound(object ctrl)
+		{
+			if (_mainWindowControlInfo.Handle != null)
+				return;
+
+			var control = ctrl as Control;
+			if (control == null)
+			{
+				Debug.WriteLine("null control in EnsureMainWindowBound");
+				return;
+			}
+
+			while (control.Parent != null)
+				control = control.Parent;
+
+			RebindCtrlIfChanged(control, ref _mainWindowControlInfo);
+		}
+
+		static bool HandleMoveAndSizeEvents(Document doc)
+		{
+			if (doc == null)
+				return false;
+
+			var ctrl = GetProperty(doc, "InternalDocument.ActiveView.DocumentView.ActiveEditControl");
+
+			bool result = RebindCtrlIfChanged(ctrl, ref _activeEditControlInfo);
+			EnsureMainWindowBound(ctrl);
+
+			ctrl = GetProperty(doc, "InternalDocument.ActiveView.DocumentView.SideBySideEditor.ActiveControl");
+
+			result |= RebindCtrlIfChanged(ctrl, ref _activeControlInfo);
+			return result;
+
+		}
+
 		public static void ActiveSegmentChanged(object sender, EventArgs e)
 		{
 			try
@@ -143,6 +337,12 @@ namespace Sdl.Community.Qualitivity.Tracking
 				}
 
 				TrackedController.InitializeActiveSegment(trackedDocuments);
+
+				// Track window positions
+				if (HandleMoveAndSizeEvents(Tracked.ActiveDocument))
+					// insert initial entry if we just bound
+					RecordWindowPositions();
+
 			}
 			catch (Exception ex)
 			{
@@ -233,8 +433,145 @@ namespace Sdl.Community.Qualitivity.Tracking
 			return result;
 		}
 
+		static object _locker = new object();
+		static Dictionary<string, Dictionary<string, List<_MethodInfo>>> _propertyGetCache = new Dictionary<string, Dictionary<string, List<_MethodInfo>>>();
+
+		static object GetProperty(object target, string propSpec)
+		{
+			if (target == null)
+				return null;
+			var parts = propSpec.Split(new char[] { '.' });
+
+			var targetType = target.GetType();
+			lock (_locker)
+			{
+				if (!_propertyGetCache.ContainsKey(targetType.FullName))
+					_propertyGetCache.Add(targetType.FullName, new Dictionary<string, List<_MethodInfo>>());
+
+				var targetCache = _propertyGetCache[targetType.FullName];
+				var current = target;
+				if (!targetCache.ContainsKey(propSpec))
+				{
+					var list = new List<_MethodInfo>();
+					foreach (string part in parts)
+					{
+						var props = current.GetType().GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+						var prop = props.Where(x => string.CompareOrdinal(part, x.Name) == 0).FirstOrDefault();
+						current = prop?.GetMethod.Invoke(current, null);
+						if (prop == null || current == null)
+						{
+							list = null;
+							break;
+						}
+						list.Add(prop.GetMethod);
+					}
+					targetCache.Add(propSpec, list);
+					return current;
+				}
+
+				// couldn't resolve
+				if (targetCache[propSpec] == null)
+					return null;
+
+				current = target;
+				foreach (var mi in targetCache[propSpec])
+				{
+					current = mi.Invoke(current, null);
+					if (current == null)
+						break;
+				}
+				return current;
+				
+			}
+
+		}
+
+
+		private static void ControlMovedOrResized(object sender, EventArgs e)
+		{
+			Debug.WriteLine("Control changed");
+			
+			RecordWindowPositions();
+		}
+
+		static Rectangle? RECTToRectangle(RECT? r)
+		{
+			if (r == null)
+				return null;
+			var rect = r.Value;
+			
+			return new Rectangle(
+				new Point((int)rect.Left, (int)rect.Top), 
+				new Size((int)(rect.Right - rect.Left), (int)( rect.Bottom - rect.Top))
+				);
+			
+		}
+
+		static void RecordWindowPositions()
+		{
+			if (Tracked.ActiveDocument == null)
+			{
+				return;
+			}
+
+			var projectFile = Tracked.ActiveDocument.Files.FirstOrDefault();
+			if (projectFile == null)
+			{
+				return;
+			}
+
+			var projectFileId = projectFile.Id.ToString();
+
+			if (!Tracked.DictCacheDocumentItems.ContainsKey(projectFileId))
+			{
+				return;
+			}
+
+			//get the cache document item               
+			var trackedDocument = Tracked.DictCacheDocumentItems[projectFile.Id.ToString()];
+
+			var ks = new KeyStroke();
+			ks.Created = DateTime.Now;
+
+			Debug.WriteLine("GetScreenPositions");
+			ks.DocumentWindowRectangle = RECTToRectangle(GetScreenPosition(_activeEditControlInfo, "activeeditcontrol"));
+			ks.EditorWindowRectangle = RECTToRectangle(GetScreenPosition(_activeControlInfo, "activecontrol"));
+			ks.MainWindowRectangle = RECTToRectangle(GetScreenPosition(_mainWindowControlInfo, "mainwindow"));
+
+			if (ks.DocumentWindowRectangle == null)
+				_activeEditControlInfo.Unbind();
+			if (ks.EditorWindowRectangle == null)
+				_activeEditControlInfo.Unbind();
+			if (ks.MainWindowRectangle == null)
+				_mainWindowControlInfo.Unbind();
+
+
+			lock (_keystrokelock)
+				trackedDocument.ActiveSegment.CurrentKeyStrokes.Add(ks);
+		}
+
+		static RECT? GetScreenPosition(ControlInfo controlInfo, string name)
+		{
+			if (controlInfo.Handle != null)
+			{
+				var rect = new RECT();
+				bool b = GetWindowRect(controlInfo.Handle.Value, ref rect);
+				if (!b)
+				{
+					Debug.WriteLine("GetWindowRect failed");
+					return null;
+				}
+				Debug.WriteLine( name + " " + rect.Top + " " + rect.Left + " " + rect.Bottom + " " + rect.Right);
+				return rect;
+			}
+			
+			Debug.WriteLine(name + " handle is null");
+			return null;
+		}
+
 		public static void ContentChanged(object sender, DocumentContentEventArgs e)
 		{
+
 			Tracked.TrackerLastActivity = DateTime.Now;
 
 			if (Tracked.ActiveDocument == null)
@@ -367,12 +704,43 @@ namespace Sdl.Community.Qualitivity.Tracking
 			}
 		}
 
+		static Point GetCaretPos()
+		{
+			var guiInfo = new GUITHREADINFO();
+			guiInfo.cbSize = (uint)Marshal.SizeOf(guiInfo);
+
+			GetGUIThreadInfo(0, out guiInfo);
+
+			Debug.WriteLine("GUIINFO caret at " + guiInfo.rcCaret.Left + "," + guiInfo.rcCaret.Bottom);
+
+			var rect = new RECT();
+			GetWindowRect(guiInfo.hwndCaret, ref rect);
+
+			Debug.WriteLine("winrect caret at " + rect.Left + ", " + rect.Top);
+
+			var pt = new Point();
+
+			pt.X = (int)( guiInfo.rcCaret.Left + rect.Left);
+			pt.Y = (int) ( guiInfo.rcCaret.Top + (guiInfo.rcCaret.Bottom - guiInfo.rcCaret.Top) / 2 + rect.Top);
+
+			Debug.WriteLine("Caret mid-point w.r.t. screen " + pt.X + "," + pt.Y);
+
+			return pt;
+			
+		}
+
 		private static void AddKeyStrokeData(KeyStroke keyStroke, string typedText, string removedText, int position, TrackedDocuments trackedDocuments)
 		{
+
 			keyStroke.Text = typedText;
 			keyStroke.Position = position;
-			keyStroke.X = Cursor.Position.X;
-			keyStroke.Y = Cursor.Position.Y;
+			// Useful for TP researchers to know about screen position of caret
+
+			var pt = GetCaretPos();
+
+			keyStroke.X = pt.X;
+			keyStroke.Y = pt.Y;
+
 
 			// needs to be revised!
 			// 1. exclude translations from providers
@@ -393,11 +761,15 @@ namespace Sdl.Community.Qualitivity.Tracking
 			}
 
 			//add the key stroke object to the list
-			trackedDocuments.ActiveSegment.CurrentTranslationKeyStokeObjectId = keyStroke.Id;
-			trackedDocuments.ActiveSegment.CurrentTranslationKeyStrokeObjectCheck = true;
-			trackedDocuments.ActiveSegment.CurrentKeyStrokes.Add(keyStroke);
+			lock (_keystrokelock)
+			{
+				trackedDocuments.ActiveSegment.CurrentTranslationKeyStokeObjectId = keyStroke.Id;
+				trackedDocuments.ActiveSegment.CurrentTranslationKeyStrokeObjectCheck = true;
+				trackedDocuments.ActiveSegment.CurrentKeyStrokes.Add(keyStroke);
+			}
 		}
 
+		private static object _keystrokelock = new object();
 
 		private static IEnumerable<ComparisonUnit> ComparisonUnitDifferences(TrackedDocuments trackedDocument, List<ContentSection> targetSectionsCurrent, KeyStroke keyStroke)
 		{
@@ -557,6 +929,11 @@ namespace Sdl.Community.Qualitivity.Tracking
 			{
 				return;
 			}
+
+			// Track window positions
+			if (HandleMoveAndSizeEvents(Tracked.ActiveDocument))
+				// insert initial entry if we just bound
+				RecordWindowPositions();
 
 			var trackedDocuments = Tracked.DictCacheDocumentItems[projectFile.Id.ToString()];
 

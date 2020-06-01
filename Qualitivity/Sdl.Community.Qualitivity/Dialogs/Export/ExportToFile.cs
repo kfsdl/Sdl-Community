@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Globalization;
 using System.Text;
 using System.Xml;
@@ -695,8 +696,11 @@ namespace Sdl.Community.Qualitivity.Dialogs.Export
                                                     xmlTextWriter.WriteAttributeString("origin", ks.OriginType);
                                                     xmlTextWriter.WriteAttributeString("match", ks.Match);
 	                                                xmlTextWriter.WriteAttributeString("position", ks.Position.ToString());
-	                                                //xmlTextWriter.WriteAttributeString("x", ks.X.ToString());
-	                                                //xmlTextWriter.WriteAttributeString("y", ks.Y.ToString());
+	                                                xmlTextWriter.WriteAttributeString("x", ks.X.ToString());
+	                                                xmlTextWriter.WriteAttributeString("y", ks.Y.ToString());
+													xmlTextWriter.WriteAttributeString("mainwindow", SafeString(ks.MainWindowRectangle));
+													xmlTextWriter.WriteAttributeString("docwindow", SafeString(ks.DocumentWindowRectangle));
+													xmlTextWriter.WriteAttributeString("editwindow", SafeString(ks.EditorWindowRectangle));
 													xmlTextWriter.WriteEndElement();//ks
                                                 }
                                             }
@@ -744,5 +748,10 @@ namespace Sdl.Community.Qualitivity.Dialogs.Export
 
             }
         }
+
+		static string SafeString(Rectangle? rect)
+		{
+			return rect == null ? string.Empty : rect.ToString();
+		}
     }
 }
